@@ -1,58 +1,65 @@
 import React from 'react'
-import { Menu, Calendar, ShoppingCart, ShieldCheck } from 'lucide-react'
+import { Menu, Calendar, ShoppingCart, RefreshCw } from 'lucide-react'
 import { Link, useLocation } from 'react-router-dom'
 
 const routeTitles = {
-  '/': { title: 'Ringkasan Dashboard', subtitle: 'Pantau performa penjualan dan status operasional hari ini' },
-  '/pos': { title: 'Kasir Penjualan', subtitle: 'Proses transaksi cepat, hitung keranjang, dan cetak struk' },
-  '/products': { title: 'Katalog Produk & Stok', subtitle: 'Kelola data produk, harga jual, dan kontrol persediaan' },
-  '/categories': { title: 'Kategori Produk', subtitle: 'Kelompokkan barang dagangan untuk kemudahan pencarian' },
-  '/transactions': { title: 'Riwayat Transaksi', subtitle: 'Daftar seluruh penjualan yang tercatat dalam sistem' },
-  '/reports': { title: 'Laporan Penjualan', subtitle: 'Analisis omset, rata-rata transaksi, dan tren produk terlaris' },
-  '/settings': { title: 'Pengaturan Sistem', subtitle: 'Konfigurasi profil toko dan preferensi aplikasi POS' },
+  '/': { title: 'Dashboard', subtitle: 'Ringkasan performa dan aktivitas toko' },
+  '/pos': { title: 'Kasir POS', subtitle: 'Transaksi kasir dan cetak struk penjualan' },
+  '/products': { title: 'Produk & Stok', subtitle: 'Katalog barang, harga jual, dan persediaan' },
+  '/categories': { title: 'Kategori', subtitle: 'Kelompok barang untuk katalog kasir' },
+  '/transactions': { title: 'Riwayat Transaksi', subtitle: 'Catatan seluruh transaksi kasir' },
+  '/reports': { title: 'Laporan Penjualan', subtitle: 'Rekapitulasi penjualan dan performa produk' },
+  '/settings': { title: 'Pengaturan', subtitle: 'Preferensi toko dan konfigurasi cetak' },
 }
 
-export function Header({ onOpenMobile }) {
+export function Header({ onOpenMobile, isBusy }) {
   const location = useLocation()
   const currentInfo = routeTitles[location.pathname] || {
     title: 'Phanix POS',
-    subtitle: 'Point of Sale Terpercaya untuk UMKM',
+    subtitle: 'Point of Sale',
   }
 
   const todayFormatted = new Intl.DateTimeFormat('id-ID', {
-    weekday: 'long',
+    weekday: 'short',
     day: 'numeric',
-    month: 'long',
+    month: 'short',
     year: 'numeric',
   }).format(new Date())
 
   return (
-    <header className="sticky top-0 z-20 bg-white border-b border-slate-200 px-4 sm:px-6 py-3.5 flex items-center justify-between shadow-xs">
+    <header className="sticky top-0 z-20 bg-white/95 backdrop-blur-xs border-b border-zinc-200 px-4 sm:px-6 py-3 flex items-center justify-between">
       {/* Left: Mobile Toggle & Page Info */}
       <div className="flex items-center gap-3">
         <button
           type="button"
           onClick={onOpenMobile}
-          className="lg:hidden p-2 rounded-xl text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition-colors"
+          className="lg:hidden p-1.5 rounded-lg text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900 transition-colors"
           aria-label="Buka Menu"
         >
           <Menu className="w-5 h-5" />
         </button>
         <div>
-          <h1 className="text-base sm:text-lg font-bold text-slate-900 tracking-tight leading-tight">
-            {currentInfo.title}
-          </h1>
-          <p className="text-xs text-slate-500 font-medium hidden sm:block">
+          <div className="flex items-center gap-2">
+            <h1 className="text-sm sm:text-base font-semibold text-zinc-900 tracking-tight leading-none">
+              {currentInfo.title}
+            </h1>
+            {isBusy && (
+              <span className="flex items-center gap-1 text-[11px] text-blue-600 font-medium">
+                <RefreshCw className="w-3 h-3 animate-spin" />
+                <span className="hidden sm:inline">Sinkronisasi...</span>
+              </span>
+            )}
+          </div>
+          <p className="text-[11px] text-zinc-400 mt-0.5 hidden sm:block">
             {currentInfo.subtitle}
           </p>
         </div>
       </div>
 
-      {/* Right: Date, Store Badge & Fast POS Button */}
-      <div className="flex items-center gap-3">
-        {/* Date badge */}
-        <div className="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-50 border border-slate-200 text-xs font-medium text-slate-600">
-          <Calendar className="w-3.5 h-3.5 text-slate-400" />
+      {/* Right: Date & Fast POS Button */}
+      <div className="flex items-center gap-2.5">
+        <div className="hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-zinc-50 border border-zinc-200/80 text-[11px] font-medium text-zinc-600">
+          <Calendar className="w-3.5 h-3.5 text-zinc-400" />
           <span>{todayFormatted}</span>
         </div>
 
@@ -60,20 +67,12 @@ export function Header({ onOpenMobile }) {
         {location.pathname !== '/pos' && (
           <Link
             to="/pos"
-            className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-blue-600 text-white text-xs font-semibold shadow-xs hover:bg-blue-700 transition-colors"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 text-white text-xs font-medium hover:bg-zinc-800 transition-colors shadow-xs"
           >
             <ShoppingCart className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Buka Kasir</span>
+            <span>Kasir</span>
           </Link>
         )}
-
-        {/* Store badge */}
-        <div className="flex items-center gap-2 pl-2 border-l border-slate-200">
-          <div className="w-2 h-2 rounded-full bg-emerald-500"></div>
-          <span className="text-xs font-semibold text-slate-700 hidden sm:inline">
-            Toko Berkah UMKM
-          </span>
-        </div>
       </div>
     </header>
   )

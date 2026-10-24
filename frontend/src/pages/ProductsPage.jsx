@@ -2,13 +2,11 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   Plus,
   Search,
-  Filter,
   Edit2,
   Trash2,
   Package,
   AlertCircle,
   CheckCircle2,
-  Tag,
   RefreshCw,
   Loader2,
   ArrowUpDown,
@@ -22,20 +20,26 @@ import { formatRupiah, formatDate } from '../utils/formatters'
 import { Badge } from '../components/ui/Badge'
 import { Modal } from '../components/ui/Modal'
 import { ConfirmModal } from '../components/ui/ConfirmModal'
+import { getCache, setCache, invalidateCache } from '../utils/cache'
 
 export function ProductsPage() {
   const { isAdmin } = useAuth()
-
-  // State Data
-  const [products, setProducts] = useState([])
-  const [categories, setCategories] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [fetchError, setFetchError] = useState(null)
 
   // Filter & Search State
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedCategory, setSelectedCategory] = useState('ALL')
   const [selectedStatus, setSelectedStatus] = useState('ALL')
+
+  // Cache Key
+  const cacheKey = useMemo(() => {
+    return `products:${searchQuery.trim()}:${selectedCategory}:${selectedStatus}`
+  }, [searchQuery, selectedCategory, selectedStatus])
+
+  // State Data diinisialisasi dari cache agar instan tanpa loading
+  const [products, setProducts] = useState(() => getCache(cacheKey) || [])
+  const [categories, setCategories] = useState(() => getCache('categories') || [])
+  const [loading, setLoading] = useState(() => !getCache(cacheKey))
+  const [fetchError, setFetchError] = useState(null)
 
   // Notification Toast
   const [notification, setNotification] = useState(null)
@@ -62,7 +66,7 @@ export function ProductsPage() {
   const [errors, setErrors] = useState({})
   const [generalError, setGeneralError] = useState('')
 
-  // Modal State Mutasi Stok (Stock Adjustment)
+  // Modal State Mutasi Stok
   const [isStockModalOpen, setIsStockModalOpen] = useState(false)
   const [stockTarget, setStockTarget] = useState(null)
   const [stockFormData, setStockFormData] = useState({
@@ -83,16 +87,22 @@ export function ProductsPage() {
   const fetchCategories = useCallback(async () => {
     try {
       const res = await categoryService.getAll()
-      setCategories(res.data || [])
+      const data = res.data || []
+      setCache('categories', data)
+      setCategories(data)
     } catch (err) {
       console.error('Gagal memuat kategori:', err)
     }
   }, [])
 
   // Memuat data produk dari API
-  const fetchProducts = useCallback(async () => {
-    setLoading(true)
+  const fetchProducts = useCallback(async (isManualRefresh = false) => {
+    const cached = getCache(cacheKey)
+    if (!cached || isManualRefresh) {
+      setLoading(true)
+    }
     setFetchError(null)
+
     try {
       const params = {}
       if (searchQuery.trim()) params.search = searchQuery.trim()
@@ -102,13 +112,25 @@ export function ProductsPage() {
       }
 
       const res = await productService.getAll(params)
-      setProducts(res.data || [])
+      const data = res.data || []
+      setCache(cacheKey, data)
+      setProducts(data)
     } catch (err) {
-      setFetchError(err.friendlyMessage || 'Gagal mengambil data produk dari server.')
+      if (!cached) {
+        setFetchError(err.friendlyMessage || 'Gagal memuat daftar produk.')
+      }
     } finally {
       setLoading(false)
     }
-  }, [searchQuery, selectedCategory, selectedStatus])
+  }, [cacheKey, searchQuery, selectedCategory, selectedStatus])
+
+  useEffect(() => {
+    const cached = getCache(cacheKey)
+    if (cached) {
+      setProducts(cached)
+      setLoading(false)
+    }
+  }, [cacheKey])
 
   useEffect(() => {
     fetchCategories()
@@ -117,32 +139,27 @@ export function ProductsPage() {
   useEffect(() => {
     const timer = setTimeout(() => {
       fetchProducts()
-    }, 250)
+    }, 200)
     return () => clearTimeout(timer)
   }, [fetchProducts])
 
-  // Auto-dismiss notification toast
   useEffect(() => {
     if (notification?.type === 'success') {
-      const timer = setTimeout(() => {
-        setNotification(null)
-      }, 4000)
+      const timer = setTimeout(() => setNotification(null), 3000)
       return () => clearTimeout(timer)
     }
   }, [notification])
 
-  // Open Add Product Modal
   function handleOpenAdd() {
     setEditingProduct(null)
-    const nextNum = products.length + 1
     setFormData({
-      sku: `BRG-${String(nextNum).padStart(3, '0')}`,
+      sku: '',
       name: '',
-      categoryId: categories[0]?.id ? String(categories[0].id) : '',
+      categoryId: categories[0]?.id || '',
       description: '',
       costPrice: '',
       sellingPrice: '',
-      stock: '0',
+      stock: '',
       minStock: '5',
       isActive: true,
     })
@@ -151,119 +168,95 @@ export function ProductsPage() {
     setIsFormOpen(true)
   }
 
-  // Open Edit Product Modal
   function handleOpenEdit(product) {
     setEditingProduct(product)
     setFormData({
       sku: product.sku,
       name: product.name,
-      categoryId: String(product.category_id || product.categoryId || categories[0]?.id || ''),
+      categoryId: product.category_id || product.category?.id || '',
       description: product.description || '',
-      costPrice: String(Math.round(product.cost_price ?? product.costPrice ?? 0)),
-      sellingPrice: String(Math.round(product.selling_price ?? product.sellingPrice ?? 0)),
-      stock: String(product.stock ?? 0),
-      minStock: String(product.min_stock ?? product.minStock ?? 5),
-      isActive: Boolean(product.is_active ?? product.isActive ?? true),
+      costPrice: product.cost_price || '',
+      sellingPrice: product.selling_price || '',
+      stock: product.stock ?? 0,
+      minStock: product.min_stock ?? 5,
+      isActive: Boolean(product.is_active),
     })
     setErrors({})
     setGeneralError('')
     setIsFormOpen(true)
   }
 
-  // Submit Add / Edit Product
   async function handleSubmit(e) {
     e.preventDefault()
     setErrors({})
     setGeneralError('')
 
-    const newErrors = {}
-    if (!formData.sku.trim()) newErrors.sku = 'Kode SKU wajib diisi.'
-    if (!formData.name.trim()) newErrors.name = 'Nama produk wajib diisi.'
-    if (!formData.categoryId) newErrors.categoryId = 'Kategori produk wajib dipilih.'
-
-    const costNum = Number(formData.costPrice)
-    const sellNum = Number(formData.sellingPrice)
-    const stockNum = Number(formData.stock)
-    const minStockNum = Number(formData.minStock)
-
-    if (isNaN(costNum) || costNum < 0) {
-      newErrors.costPrice = 'Harga modal harus bernilai minimal 0.'
+    const err = {}
+    if (!formData.sku.trim()) err.sku = 'SKU wajib diisi.'
+    if (!formData.name.trim()) err.name = 'Nama produk wajib diisi.'
+    if (!formData.categoryId) err.categoryId = 'Pilih kategori produk.'
+    if (formData.costPrice === '' || Number(formData.costPrice) < 0) {
+      err.costPrice = 'Harga modal harus >= 0.'
     }
-    if (isNaN(sellNum) || sellNum < 0) {
-      newErrors.sellingPrice = 'Harga jual harus bernilai minimal 0.'
+    if (formData.sellingPrice === '' || Number(formData.sellingPrice) < 0) {
+      err.sellingPrice = 'Harga jual harus >= 0.'
     }
-    if (!editingProduct && (isNaN(stockNum) || stockNum < 0)) {
-      newErrors.stock = 'Stok awal tidak boleh bernilai negatif.'
-    }
-    if (isNaN(minStockNum) || minStockNum < 0) {
-      newErrors.minStock = 'Batas minimum stok tidak boleh negatif.'
+    if (!editingProduct && (formData.stock === '' || Number(formData.stock) < 0)) {
+      err.stock = 'Stok awal harus >= 0.'
     }
 
-    if (Object.keys(newErrors).length > 0) {
-      setErrors(newErrors)
+    if (Object.keys(err).length > 0) {
+      setErrors(err)
       return
     }
 
     setSubmitting(true)
     try {
+      const payload = {
+        sku: formData.sku.trim(),
+        name: formData.name.trim(),
+        category_id: formData.categoryId,
+        description: formData.description.trim(),
+        cost_price: Number(formData.costPrice),
+        selling_price: Number(formData.sellingPrice),
+        min_stock: Number(formData.minStock) || 0,
+        is_active: Boolean(formData.isActive),
+      }
+
+      if (!editingProduct) {
+        payload.stock = Number(formData.stock) || 0
+      }
+
       if (editingProduct) {
-        // Update product
-        await productService.update(editingProduct.id, {
-          sku: formData.sku.trim(),
-          name: formData.name.trim(),
-          category_id: Number(formData.categoryId),
-          description: formData.description.trim(),
-          cost_price: costNum,
-          selling_price: sellNum,
-          min_stock: minStockNum,
-          is_active: formData.isActive,
-        })
+        await productService.update(editingProduct.id, payload)
         setNotification({
           type: 'success',
-          message: `Produk "${formData.name.trim()}" berhasil diperbarui.`,
+          message: `Produk "${payload.name}" berhasil diperbarui.`,
         })
       } else {
-        // Create product
-        await productService.create({
-          sku: formData.sku.trim(),
-          name: formData.name.trim(),
-          category_id: Number(formData.categoryId),
-          description: formData.description.trim(),
-          cost_price: costNum,
-          selling_price: sellNum,
-          stock: stockNum,
-          min_stock: minStockNum,
-          is_active: formData.isActive,
-        })
+        await productService.create(payload)
         setNotification({
           type: 'success',
-          message: `Produk "${formData.name.trim()}" berhasil ditambahkan.`,
+          message: `Produk "${payload.name}" berhasil ditambahkan.`,
         })
       }
 
+      invalidateCache('products')
+      invalidateCache('pos_products')
+      invalidateCache('dashboard')
       setIsFormOpen(false)
-      await fetchProducts()
+      fetchProducts(true)
     } catch (err) {
-      if (err.response?.status === 422 && err.response?.data?.errors) {
-        const backendErrors = {}
-        const be = err.response.data.errors
-        if (be.sku) backendErrors.sku = be.sku[0]
-        if (be.name) backendErrors.name = be.name[0]
-        if (be.category_id) backendErrors.categoryId = be.category_id[0]
-        if (be.cost_price) backendErrors.costPrice = be.cost_price[0]
-        if (be.selling_price) backendErrors.sellingPrice = be.selling_price[0]
-        if (be.stock) backendErrors.stock = be.stock[0]
-        if (be.min_stock) backendErrors.minStock = be.min_stock[0]
-        setErrors(backendErrors)
+      if (err.response?.data?.errors) {
+        setErrors(err.response.data.errors)
       } else {
-        setGeneralError(err.friendlyMessage || 'Terjadi kesalahan saat menyimpan data produk.')
+        setGeneralError(err.friendlyMessage || 'Gagal menyimpan produk.')
       }
     } finally {
       setSubmitting(false)
     }
   }
 
-  // Delete product confirmation
   async function handleDeleteConfirm() {
     if (!deleteTarget) return
     setDeleting(true)
@@ -273,22 +266,21 @@ export function ProductsPage() {
         type: 'success',
         message: `Produk "${deleteTarget.name}" berhasil dihapus.`,
       })
+      invalidateCache('products')
+      invalidateCache('pos_products')
+      invalidateCache('dashboard')
       setDeleteTarget(null)
-      await fetchProducts()
+      fetchProducts(true)
     } catch (err) {
       setNotification({
         type: 'error',
-        message:
-          err.friendlyMessage ||
-          'Produk tidak dapat dihapus karena memiliki riwayat data. Nonaktifkan produk sebagai gantinya.',
+        message: err.friendlyMessage || 'Gagal menghapus produk.',
       })
-      setDeleteTarget(null)
     } finally {
       setDeleting(false)
     }
   }
 
-  // Open Stock Adjustment Modal
   function handleOpenStockModal(product) {
     setStockTarget(product)
     setStockFormData({
@@ -300,37 +292,13 @@ export function ProductsPage() {
     setIsStockModalOpen(true)
   }
 
-  // Preview target stock calculation
-  const stockPreview = useMemo(() => {
-    if (!stockTarget) return 0
-    const current = Number(stockTarget.stock) || 0
-    const qty = Number(stockFormData.quantity) || 0
-
-    if (stockFormData.type === 'in') {
-      return current + qty
-    } else if (stockFormData.type === 'out') {
-      return current - qty
-    } else if (stockFormData.type === 'adjustment') {
-      return qty
-    }
-    return current
-  }, [stockTarget, stockFormData])
-
-  // Submit Stock Adjustment
   async function handleStockSubmit(e) {
     e.preventDefault()
     setStockError('')
 
     const qty = Number(stockFormData.quantity)
     if (isNaN(qty) || qty < 0) {
-      setStockError('Kuantitas stok harus bernilai angka positif.')
-      return
-    }
-
-    if (stockFormData.type === 'out' && qty > (stockTarget?.stock || 0)) {
-      setStockError(
-        `Kuantitas pengurangan (${qty}) melebihi stok yang tersedia saat ini (${stockTarget?.stock || 0}).`
-      )
+      setStockError('Jumlah stok harus berupa angka positif.')
       return
     }
 
@@ -339,93 +307,103 @@ export function ProductsPage() {
       await productService.adjustStock(stockTarget.id, {
         type: stockFormData.type,
         quantity: qty,
-        note: stockFormData.note.trim() || undefined,
+        note: stockFormData.note.trim(),
       })
 
       setNotification({
         type: 'success',
-        message: `Stok "${stockTarget.name}" berhasil disesuaikan menjadi ${stockPreview} pcs.`,
+        message: `Stok produk "${stockTarget.name}" berhasil disesuaikan.`,
       })
 
+      invalidateCache('products')
+      invalidateCache('pos_products')
+      invalidateCache('dashboard')
       setIsStockModalOpen(false)
-      await fetchProducts()
+      fetchProducts(true)
     } catch (err) {
-      setStockError(err.friendlyMessage || 'Gagal melakukan mutasi stok.')
+      setStockError(err.friendlyMessage || 'Gagal menyesuaikan stok.')
     } finally {
       setStockSubmitting(false)
     }
   }
 
-  // Open Stock History Modal
   async function handleOpenHistory(product) {
     setHistoryTarget(product)
+    setMovements([])
     setIsHistoryModalOpen(true)
     setLoadingMovements(true)
+
     try {
       const res = await productService.getStockMovements(product.id)
       setMovements(res.data || [])
     } catch (err) {
       console.error('Gagal mengambil riwayat mutasi:', err)
-      setMovements([])
     } finally {
       setLoadingMovements(false)
     }
   }
 
+  const stockPreview = useMemo(() => {
+    if (!stockTarget) return 0
+    const current = Number(stockTarget.stock) || 0
+    const qty = Number(stockFormData.quantity) || 0
+
+    if (stockFormData.type === 'in') return current + qty
+    if (stockFormData.type === 'out') return Math.max(0, current - qty)
+    if (stockFormData.type === 'adjustment') return qty
+    return current
+  }, [stockTarget, stockFormData])
+
   return (
-    <div className="space-y-6 max-w-7xl mx-auto">
+    <div className="space-y-4 max-w-7xl mx-auto">
       {/* Top Action Bar */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <div className="flex items-center gap-2.5">
-            <h2 className="text-xl font-bold text-slate-900 tracking-tight">Katalog Produk & Stok</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-base font-semibold text-zinc-900 tracking-tight">Katalog Produk & Stok</h2>
             {!isAdmin && (
-              <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-600 border border-slate-200">
-                Mode Baca (Kasir)
-              </span>
+              <Badge variant="outline">Mode Baca</Badge>
             )}
           </div>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Total {products.length} produk terdaftar dalam katalog sistem Phanix POS
+          <p className="text-xs text-zinc-500">
+            {products.length} produk terdaftar
           </p>
         </div>
 
         <div className="flex items-center gap-2">
-          {/* Tombol Segarkan */}
           <button
             type="button"
-            onClick={fetchProducts}
+            onClick={() => fetchProducts(true)}
             disabled={loading}
-            className="p-2 rounded-xl text-slate-500 hover:text-slate-800 hover:bg-slate-100 border border-slate-200 transition-colors disabled:opacity-50"
+            className="p-1.5 rounded-lg text-zinc-600 hover:bg-zinc-100 border border-zinc-200 bg-white transition-colors disabled:opacity-50 cursor-pointer"
             title="Segarkan data produk"
           >
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin text-blue-600' : ''}`} />
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-zinc-900' : ''}`} />
           </button>
 
-          {/* Tombol Tambah Produk (Khusus Admin) */}
           {isAdmin && (
             <button
               type="button"
               onClick={handleOpenAdd}
-              className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 text-white text-xs font-semibold shadow-xs hover:bg-blue-700 transition-colors cursor-pointer"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 text-white text-xs font-medium hover:bg-zinc-800 transition-colors shadow-xs cursor-pointer"
             >
-              <Plus className="w-4 h-4" />
-              Tambah Produk Baru
+              <Plus className="w-3.5 h-3.5" />
+              <span>Tambah Produk</span>
             </button>
           )}
         </div>
       </div>
 
-      {/* Alert Notifikasi Feedback */}
+      {/* Alert Notifikasi */}
       {notification && (
         <div
-          className={`p-3.5 rounded-xl text-xs flex items-center justify-between gap-3 border transition-all ${
+          className={`p-3 rounded-lg text-xs flex items-center justify-between gap-2 border transition-all ${
             notification.type === 'success'
               ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
               : 'bg-rose-50 text-rose-800 border-rose-200'
           }`}
         >
-          <div className="flex items-center gap-2.5 min-w-0">
+          <div className="flex items-center gap-2 min-w-0">
             {notification.type === 'success' ? (
               <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600" />
             ) : (
@@ -436,7 +414,7 @@ export function ProductsPage() {
           <button
             type="button"
             onClick={() => setNotification(null)}
-            className="text-[11px] font-semibold underline hover:no-underline shrink-0"
+            className="text-[11px] underline hover:no-underline shrink-0"
           >
             Tutup
           </button>
@@ -444,25 +422,23 @@ export function ProductsPage() {
       )}
 
       {/* Filter and Search Bar */}
-      <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs flex flex-col md:flex-row gap-3">
-        {/* Search */}
+      <div className="bg-white p-3 rounded-xl border border-zinc-200/80 shadow-xs flex flex-col sm:flex-row gap-2.5">
         <div className="relative flex-1">
-          <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+          <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
           <input
             type="text"
-            placeholder="Cari berdasarkan nama produk atau kode SKU..."
+            placeholder="Cari nama produk atau SKU..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-10 pr-4 py-2 rounded-xl border border-slate-200 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+            className="w-full pl-8 pr-3 py-1.5 rounded-lg border border-zinc-200 text-xs focus:outline-none focus:border-zinc-900"
           />
         </div>
 
-        {/* Category Filter */}
-        <div className="w-full md:w-56">
+        <div className="w-full sm:w-48">
           <select
             value={selectedCategory}
             onChange={(e) => setSelectedCategory(e.target.value)}
-            className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+            className="w-full px-2.5 py-1.5 rounded-lg border border-zinc-200 text-xs bg-white focus:outline-none focus:border-zinc-900"
           >
             <option value="ALL">Semua Kategori</option>
             {categories.map((c) => (
@@ -473,190 +449,162 @@ export function ProductsPage() {
           </select>
         </div>
 
-        {/* Status Filter */}
-        <div className="w-full md:w-44">
+        <div className="w-full sm:w-36">
           <select
             value={selectedStatus}
             onChange={(e) => setSelectedStatus(e.target.value)}
-            className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+            className="w-full px-2.5 py-1.5 rounded-lg border border-zinc-200 text-xs bg-white focus:outline-none focus:border-zinc-900"
           >
             <option value="ALL">Semua Status</option>
-            <option value="ACTIVE">Aktif Dijual</option>
+            <option value="ACTIVE">Aktif</option>
             <option value="INACTIVE">Nonaktif</option>
           </select>
         </div>
       </div>
 
-      {/* Error State */}
+      {/* Error Banner */}
       {fetchError && !loading && (
-        <div className="bg-rose-50 border border-rose-200 rounded-2xl p-6 text-center space-y-3">
-          <div className="w-10 h-10 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center mx-auto">
-            <AlertCircle className="w-5 h-5" />
-          </div>
-          <div>
-            <h3 className="text-sm font-semibold text-rose-900">Gagal Memuat Produk</h3>
-            <p className="text-xs text-rose-700 mt-1 max-w-md mx-auto">{fetchError}</p>
-          </div>
+        <div className="bg-rose-50 border border-rose-200 rounded-xl p-4 text-center space-y-2">
+          <p className="text-xs text-rose-700">{fetchError}</p>
           <button
             type="button"
-            onClick={fetchProducts}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-rose-600 text-white text-xs font-semibold hover:bg-rose-700 transition-colors"
+            onClick={() => fetchProducts(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md bg-rose-600 text-white text-xs font-medium hover:bg-rose-700"
           >
-            <RefreshCw className="w-3.5 h-3.5" />
+            <RefreshCw className="w-3 h-3" />
             Coba Lagi
           </button>
         </div>
       )}
 
-      {/* Loading Skeleton */}
-      {loading && (
-        <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center shadow-xs">
-          <div className="flex flex-col items-center justify-center gap-3">
-            <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
-            <p className="text-xs text-slate-500 font-medium">Memuat katalog produk dari database...</p>
-          </div>
+      {/* First-time Loading Skeleton */}
+      {loading && products.length === 0 && (
+        <div className="bg-white rounded-xl border border-zinc-200/80 p-8 text-center animate-pulse">
+          <div className="h-4 bg-zinc-100 rounded w-48 mx-auto mb-2" />
+          <div className="h-3 bg-zinc-50 rounded w-32 mx-auto" />
         </div>
       )}
 
       {/* Products Table */}
-      {!loading && !fetchError && (
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+      {products.length > 0 && (
+        <div className="bg-white rounded-xl border border-zinc-200/80 shadow-xs overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs text-slate-600">
-              <thead className="bg-slate-50/80 text-[11px] uppercase tracking-wider text-slate-500 font-semibold border-b border-slate-100">
+            <table className="w-full text-left text-xs text-zinc-600">
+              <thead className="bg-zinc-50 text-[10px] uppercase tracking-wider text-zinc-400 font-semibold border-b border-zinc-100">
                 <tr>
-                  <th className="px-6 py-3.5">SKU</th>
-                  <th className="px-6 py-3.5">Nama Produk</th>
-                  <th className="px-6 py-3.5">Kategori</th>
-                  <th className="px-6 py-3.5 text-right">Harga Modal</th>
-                  <th className="px-6 py-3.5 text-right">Harga Jual</th>
-                  <th className="px-6 py-3.5 text-center">Stok</th>
-                  <th className="px-6 py-3.5 text-center">Status</th>
-                  <th className="px-6 py-3.5 text-right">Aksi</th>
+                  <th className="px-4 py-3">SKU</th>
+                  <th className="px-4 py-3">Nama Produk</th>
+                  <th className="px-4 py-3">Kategori</th>
+                  <th className="px-4 py-3 text-right">Modal</th>
+                  <th className="px-4 py-3 text-right">Harga Jual</th>
+                  <th className="px-4 py-3 text-center">Stok</th>
+                  <th className="px-4 py-3 text-center">Status</th>
+                  <th className="px-4 py-3 text-right">Aksi</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100">
-                {products.length === 0 ? (
-                  <tr>
-                    <td colSpan={8} className="px-6 py-12 text-center text-slate-400">
-                      <Package className="w-8 h-8 mx-auto mb-2 text-slate-300" />
-                      <p className="font-semibold text-slate-700">Tidak ada produk ditemukan.</p>
-                      <p className="text-[11px] text-slate-400 mt-0.5">
-                        Sesuaikan kata kunci pencarian atau filter kategori Anda.
-                      </p>
-                    </td>
-                  </tr>
-                ) : (
-                  products.map((p) => {
-                    const minStock = p.min_stock ?? p.minStock ?? 5
-                    const stock = p.stock ?? 0
-                    const isLow = stock <= minStock
-                    const isActive = p.is_active ?? p.isActive ?? true
-                    const costPrice = p.cost_price ?? p.costPrice ?? 0
-                    const sellingPrice = p.selling_price ?? p.sellingPrice ?? 0
-                    const categoryName = p.category?.name || p.categoryName || 'Umum'
+              <tbody className="divide-y divide-zinc-100">
+                {products.map((p) => {
+                  const minStock = p.min_stock ?? p.minStock ?? 5
+                  const stock = p.stock ?? 0
+                  const isLow = stock <= minStock
+                  const isActive = p.is_active ?? p.isActive ?? true
+                  const costPrice = p.cost_price ?? p.costPrice ?? 0
+                  const sellingPrice = p.selling_price ?? p.sellingPrice ?? 0
+                  const categoryName = p.category?.name || p.categoryName || 'Umum'
 
-                    return (
-                      <tr key={p.id} className="hover:bg-slate-50/60 transition-colors">
-                        <td className="px-6 py-4 font-mono font-semibold text-slate-700">
-                          {p.sku}
-                        </td>
-                        <td className="px-6 py-4">
-                          <div className="font-semibold text-slate-900">{p.name}</div>
-                          <div className="text-[11px] text-slate-400">Min. Stok: {minStock}</div>
-                        </td>
-                        <td className="px-6 py-4">
-                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg bg-slate-100 text-slate-700 text-[11px] font-medium">
-                            <Tag className="w-3 h-3 text-slate-400" />
-                            {categoryName}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4 text-right text-slate-500">
-                          {formatRupiah(costPrice)}
-                        </td>
-                        <td className="px-6 py-4 text-right font-bold text-slate-900">
-                          {formatRupiah(sellingPrice)}
-                        </td>
-                        <td className="px-6 py-4 text-center">
-                          <span
-                            className={`inline-block px-2.5 py-1 rounded-full text-xs font-bold ${
-                              stock === 0
-                                ? 'bg-rose-100 text-rose-700'
-                                : isLow
-                                ? 'bg-amber-100 text-amber-800'
-                                : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                            }`}
+                  return (
+                    <tr key={p.id} className="hover:bg-zinc-50/70 transition-colors">
+                      <td className="px-4 py-3 font-mono text-zinc-500 text-[11px]">
+                        {p.sku}
+                      </td>
+                      <td className="px-4 py-3 font-medium text-zinc-900">
+                        {p.name}
+                      </td>
+                      <td className="px-4 py-3 text-zinc-500">
+                        <span className="text-[11px] text-zinc-600 bg-zinc-100 px-2 py-0.5 rounded">
+                          {categoryName}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-right text-zinc-500 tabular-nums font-mono">
+                        {formatRupiah(costPrice)}
+                      </td>
+                      <td className="px-4 py-3 text-right font-medium text-zinc-900 tabular-nums font-mono">
+                        {formatRupiah(sellingPrice)}
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <span
+                          className={`inline-block px-2 py-0.5 rounded text-[11px] font-mono tabular-nums font-semibold ${
+                            stock === 0
+                              ? 'bg-rose-50 text-rose-700 border border-rose-200/60'
+                              : isLow
+                              ? 'bg-amber-50 text-amber-800 border border-amber-200/60'
+                              : 'text-zinc-700 bg-zinc-100'
+                          }`}
+                        >
+                          {stock} pcs
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <Badge variant={isActive ? 'success' : 'neutral'} dot>
+                          {isActive ? 'Aktif' : 'Nonaktif'}
+                        </Badge>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <div className="flex items-center justify-end gap-1">
+                          <button
+                            type="button"
+                            onClick={() => handleOpenHistory(p)}
+                            className="p-1 rounded text-zinc-400 hover:text-zinc-800 hover:bg-zinc-100 transition-colors"
+                            title="Riwayat Mutasi"
                           >
-                            {stock === 0 ? 'Habis (0)' : `${stock} pcs`}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4 text-center">
-                          {isActive ? (
-                            <Badge variant="success">Aktif</Badge>
-                          ) : (
-                            <Badge variant="neutral">Nonaktif</Badge>
-                          )}
-                        </td>
-                        <td className="px-6 py-4 text-right">
-                          <div className="flex items-center justify-end gap-1.5">
-                            {/* Tombol Riwayat Mutasi Stok (Bisa dilihat Admin & Kasir) */}
-                            <button
-                              type="button"
-                              onClick={() => handleOpenHistory(p)}
-                              className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
-                              title="Riwayat Mutasi Stok"
-                            >
-                              <History className="w-4 h-4" />
-                            </button>
+                            <History className="w-3.5 h-3.5" />
+                          </button>
 
-                            {/* Tombol Mutasi Stok Manual (Khusus Admin) */}
-                            {isAdmin && (
+                          {isAdmin && (
+                            <>
                               <button
                                 type="button"
                                 onClick={() => handleOpenStockModal(p)}
-                                className="p-1.5 rounded-lg text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 transition-colors"
+                                className="p-1 rounded text-zinc-400 hover:text-zinc-800 hover:bg-zinc-100 transition-colors"
                                 title="Sesuaikan Stok"
                               >
-                                <ArrowUpDown className="w-4 h-4" />
+                                <ArrowUpDown className="w-3.5 h-3.5" />
                               </button>
-                            )}
-
-                            {/* Tombol Edit Produk (Khusus Admin) */}
-                            {isAdmin && (
                               <button
                                 type="button"
                                 onClick={() => handleOpenEdit(p)}
-                                className="p-1.5 rounded-lg text-slate-500 hover:text-blue-600 hover:bg-blue-50 transition-colors"
-                                title="Edit Data Produk"
+                                className="p-1 rounded text-zinc-400 hover:text-zinc-800 hover:bg-zinc-100 transition-colors"
+                                title="Edit"
                               >
-                                <Edit2 className="w-4 h-4" />
+                                <Edit2 className="w-3.5 h-3.5" />
                               </button>
-                            )}
-
-                            {/* Tombol Hapus Produk (Khusus Admin) */}
-                            {isAdmin && (
                               <button
                                 type="button"
                                 onClick={() => setDeleteTarget(p)}
-                                className="p-1.5 rounded-lg text-slate-500 hover:text-rose-600 hover:bg-rose-50 transition-colors"
-                                title="Hapus Produk"
+                                className="p-1 rounded text-zinc-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
+                                title="Hapus"
                               >
-                                <Trash2 className="w-4 h-4" />
+                                <Trash2 className="w-3.5 h-3.5" />
                               </button>
-                            )}
-
-                            {!isAdmin && (
-                              <span className="text-[11px] text-slate-300 italic">Lihat</span>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    )
-                  })
-                )}
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {/* Empty State */}
+      {!loading && !fetchError && products.length === 0 && (
+        <div className="bg-white rounded-xl border border-zinc-200/80 p-10 text-center space-y-2">
+          <Package className="w-8 h-8 mx-auto text-zinc-300" />
+          <p className="text-xs font-semibold text-zinc-700">Tidak ada produk ditemukan</p>
+          <p className="text-[11px] text-zinc-400">Sesuaikan kata kunci atau filter pencarian Anda</p>
         </div>
       )}
 
@@ -664,44 +612,44 @@ export function ProductsPage() {
       <Modal
         isOpen={isFormOpen}
         onClose={() => !submitting && setIsFormOpen(false)}
-        title={editingProduct ? 'Edit Data Produk' : 'Tambah Produk Baru'}
-        maxWidth="max-w-xl"
+        title={editingProduct ? 'Edit Produk' : 'Tambah Produk Baru'}
+        maxWidth="max-w-lg"
       >
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} className="space-y-3.5">
           {generalError && (
-            <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">
+            <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">
               <AlertCircle className="w-4 h-4 shrink-0" />
               <span>{generalError}</span>
             </div>
           )}
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
+              <label className="block text-xs font-medium text-zinc-700 mb-1">
                 Kode SKU / Barcode *
               </label>
               <input
                 type="text"
                 value={formData.sku}
                 onChange={(e) => setFormData({ ...formData, sku: e.target.value })}
-                placeholder="misal: BRG-001"
+                placeholder="BRG-001"
                 disabled={submitting}
-                className={`w-full px-3 py-2 rounded-xl border text-xs font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/20 ${
-                  errors.sku ? 'border-rose-400 focus:border-rose-500' : 'border-slate-200 focus:border-blue-500'
+                className={`w-full px-3 py-1.5 rounded-lg border text-xs font-mono focus:outline-none ${
+                  errors.sku ? 'border-rose-400 focus:border-rose-500' : 'border-zinc-200 focus:border-zinc-900'
                 }`}
               />
-              {errors.sku && <p className="text-[11px] text-rose-500 mt-1">{errors.sku}</p>}
+              {errors.sku && <p className="text-[11px] text-rose-600 mt-1">{errors.sku}</p>}
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Kategori Produk *
+              <label className="block text-xs font-medium text-zinc-700 mb-1">
+                Kategori *
               </label>
               <select
                 value={formData.categoryId}
                 onChange={(e) => setFormData({ ...formData, categoryId: e.target.value })}
                 disabled={submitting}
-                className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                className="w-full px-3 py-1.5 rounded-lg border border-zinc-200 text-xs bg-white focus:outline-none focus:border-zinc-900"
               >
                 {categories.map((c) => (
                   <option key={c.id} value={c.id}>
@@ -709,90 +657,84 @@ export function ProductsPage() {
                   </option>
                 ))}
               </select>
-              {errors.categoryId && <p className="text-[11px] text-rose-500 mt-1">{errors.categoryId}</p>}
+              {errors.categoryId && <p className="text-[11px] text-rose-600 mt-1">{errors.categoryId}</p>}
             </div>
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">
+            <label className="block text-xs font-medium text-zinc-700 mb-1">
               Nama Produk *
             </label>
             <input
               type="text"
               value={formData.name}
               onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-              placeholder="misal: Beras Premium Ramos 5kg"
+              placeholder="Contoh: Beras Ramos 5kg"
               disabled={submitting}
-              className={`w-full px-3 py-2 rounded-xl border text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20 ${
-                errors.name ? 'border-rose-400 focus:border-rose-500' : 'border-slate-200 focus:border-blue-500'
+              className={`w-full px-3 py-1.5 rounded-lg border text-xs focus:outline-none ${
+                errors.name ? 'border-rose-400 focus:border-rose-500' : 'border-zinc-200 focus:border-zinc-900'
               }`}
             />
-            {errors.name && <p className="text-[11px] text-rose-500 mt-1">{errors.name}</p>}
+            {errors.name && <p className="text-[11px] text-rose-600 mt-1">{errors.name}</p>}
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Harga Modal / Beli (Rp) *
+              <label className="block text-xs font-medium text-zinc-700 mb-1">
+                Harga Modal (Rp) *
               </label>
               <input
                 type="number"
                 value={formData.costPrice}
                 onChange={(e) => setFormData({ ...formData, costPrice: e.target.value })}
-                placeholder="68000"
+                placeholder="0"
                 min="0"
                 disabled={submitting}
-                className={`w-full px-3 py-2 rounded-xl border text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20 ${
-                  errors.costPrice ? 'border-rose-400 focus:border-rose-500' : 'border-slate-200 focus:border-blue-500'
+                className={`w-full px-3 py-1.5 rounded-lg border text-xs focus:outline-none ${
+                  errors.costPrice ? 'border-rose-400 focus:border-rose-500' : 'border-zinc-200 focus:border-zinc-900'
                 }`}
               />
-              {errors.costPrice && <p className="text-[11px] text-rose-500 mt-1">{errors.costPrice}</p>}
+              {errors.costPrice && <p className="text-[11px] text-rose-600 mt-1">{errors.costPrice}</p>}
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
+              <label className="block text-xs font-medium text-zinc-700 mb-1">
                 Harga Jual (Rp) *
               </label>
               <input
                 type="number"
                 value={formData.sellingPrice}
                 onChange={(e) => setFormData({ ...formData, sellingPrice: e.target.value })}
-                placeholder="75000"
+                placeholder="0"
                 min="0"
                 disabled={submitting}
-                className={`w-full px-3 py-2 rounded-xl border text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20 ${
-                  errors.sellingPrice ? 'border-rose-400 focus:border-rose-500' : 'border-slate-200 focus:border-blue-500'
+                className={`w-full px-3 py-1.5 rounded-lg border text-xs focus:outline-none ${
+                  errors.sellingPrice ? 'border-rose-400 focus:border-rose-500' : 'border-zinc-200 focus:border-zinc-900'
                 }`}
               />
-              {errors.sellingPrice && <p className="text-[11px] text-rose-500 mt-1">{errors.sellingPrice}</p>}
+              {errors.sellingPrice && <p className="text-[11px] text-rose-600 mt-1">{errors.sellingPrice}</p>}
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                {editingProduct ? 'Stok Saat Ini (Hanya Baca)' : 'Stok Awal Masuk *'}
+              <label className="block text-xs font-medium text-zinc-700 mb-1">
+                {editingProduct ? 'Stok Saat Ini (Read-only)' : 'Stok Awal *'}
               </label>
               <input
                 type="number"
                 value={formData.stock}
                 onChange={(e) => setFormData({ ...formData, stock: e.target.value })}
-                placeholder="10"
+                placeholder="0"
                 min="0"
                 disabled={editingProduct || submitting}
-                className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 disabled:bg-slate-50 disabled:text-slate-500"
+                className="w-full px-3 py-1.5 rounded-lg border border-zinc-200 text-xs focus:outline-none focus:border-zinc-900 disabled:bg-zinc-50"
               />
-              {editingProduct ? (
-                <p className="text-[10px] text-slate-400 mt-1">
-                  *Untuk mengubah jumlah stok, gunakan tombol <strong>Sesuaikan Stok</strong> pada tabel.
-                </p>
-              ) : (
-                errors.stock && <p className="text-[11px] text-rose-500 mt-1">{errors.stock}</p>
-              )}
+              {errors.stock && <p className="text-[11px] text-rose-600 mt-1">{errors.stock}</p>}
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
+              <label className="block text-xs font-medium text-zinc-700 mb-1">
                 Batas Minimum Stok
               </label>
               <input
@@ -802,104 +744,89 @@ export function ProductsPage() {
                 placeholder="5"
                 min="0"
                 disabled={submitting}
-                className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                className="w-full px-3 py-1.5 rounded-lg border border-zinc-200 text-xs focus:outline-none focus:border-zinc-900"
               />
-              {errors.minStock && <p className="text-[11px] text-rose-500 mt-1">{errors.minStock}</p>}
             </div>
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">
-              Deskripsi Singkat (Opsional)
-            </label>
-            <textarea
-              rows={2}
-              value={formData.description}
-              onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-              placeholder="Keterangan singkat produk..."
-              disabled={submitting}
-              className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
-            />
-          </div>
-
-          <div className="pt-2">
-            <label className="inline-flex items-center gap-2 cursor-pointer">
+            <label className="inline-flex items-center gap-2 cursor-pointer pt-1">
               <input
                 type="checkbox"
                 checked={formData.isActive}
                 onChange={(e) => setFormData({ ...formData, isActive: e.target.checked })}
                 disabled={submitting}
-                className="rounded text-blue-600 focus:ring-blue-500 w-4 h-4 cursor-pointer"
+                className="rounded text-zinc-900 focus:ring-zinc-900 w-4 h-4 cursor-pointer"
               />
-              <span className="text-xs font-medium text-slate-700">
+              <span className="text-xs font-medium text-zinc-700">
                 Produk aktif dan dapat dijual di kasir
               </span>
             </label>
           </div>
 
-          <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100">
+          <div className="flex items-center justify-end gap-2 pt-3 border-t border-zinc-100">
             <button
               type="button"
               disabled={submitting}
               onClick={() => setIsFormOpen(false)}
-              className="px-4 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-xl hover:bg-slate-50 transition-colors disabled:opacity-50"
+              className="px-3 py-1.5 text-xs font-medium text-zinc-700 bg-white border border-zinc-200 rounded-lg hover:bg-zinc-50"
             >
               Batal
             </button>
             <button
               type="submit"
               disabled={submitting}
-              className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-blue-600 rounded-xl hover:bg-blue-700 transition-colors shadow-xs disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium text-white bg-zinc-900 rounded-lg hover:bg-zinc-800 transition-colors shadow-xs disabled:opacity-50 cursor-pointer"
             >
-              {submitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-              {editingProduct ? 'Simpan Perubahan' : 'Tambahkan Produk'}
+              {submitting && <Loader2 className="w-3 h-3 animate-spin" />}
+              <span>{editingProduct ? 'Simpan' : 'Tambah'}</span>
             </button>
           </div>
         </form>
       </Modal>
 
-      {/* Modal Penyesuaian Stok (Stock Adjustment) */}
+      {/* Modal Penyesuaian Stok */}
       <Modal
         isOpen={isStockModalOpen}
         onClose={() => !stockSubmitting && setIsStockModalOpen(false)}
-        title="Penyesuaian Stok Produk"
+        title="Sesuaikan Stok Produk"
         maxWidth="max-w-md"
       >
-        <form onSubmit={handleStockSubmit} className="space-y-4">
-          <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200/80">
-            <p className="text-xs font-bold text-slate-900">{stockTarget?.name}</p>
-            <div className="flex items-center gap-3 mt-1 text-[11px] text-slate-500">
-              <span>SKU: <strong className="font-mono text-slate-700">{stockTarget?.sku}</strong></span>
+        <form onSubmit={handleStockSubmit} className="space-y-3.5">
+          <div className="bg-zinc-50 p-3 rounded-lg border border-zinc-200/80 text-xs">
+            <p className="font-medium text-zinc-900">{stockTarget?.name}</p>
+            <div className="flex items-center gap-2 mt-0.5 text-[11px] text-zinc-500">
+              <span>SKU: {stockTarget?.sku}</span>
               <span>•</span>
-              <span>Stok Saat Ini: <strong className="text-blue-700">{stockTarget?.stock} pcs</strong></span>
+              <span>Stok: <strong>{stockTarget?.stock} pcs</strong></span>
             </div>
           </div>
 
           {stockError && (
-            <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">
+            <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">
               <AlertCircle className="w-4 h-4 shrink-0" />
               <span>{stockError}</span>
             </div>
           )}
 
           <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">
-              Jenis Mutasi Stok *
+            <label className="block text-xs font-medium text-zinc-700 mb-1">
+              Jenis Mutasi *
             </label>
             <select
               value={stockFormData.type}
               onChange={(e) => setStockFormData({ ...stockFormData, type: e.target.value })}
               disabled={stockSubmitting}
-              className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+              className="w-full px-3 py-1.5 rounded-lg border border-zinc-200 text-xs bg-white focus:outline-none focus:border-zinc-900"
             >
-              <option value="in">Stok Masuk (Pembelian / Restock Supplier)</option>
-              <option value="out">Stok Keluar (Barang Rusak / Kedaluwarsa / Hilang)</option>
-              <option value="adjustment">Penyesuaian Fisik (Hasil Stock Opname)</option>
+              <option value="in">Stok Masuk (Restock)</option>
+              <option value="out">Stok Keluar (Rusak / Hilang)</option>
+              <option value="adjustment">Stock Opname (Fisik Sebenarnya)</option>
             </select>
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">
+            <label className="block text-xs font-medium text-zinc-700 mb-1">
               {stockFormData.type === 'adjustment'
                 ? 'Jumlah Stok Fisik Sebenarnya (pcs) *'
                 : 'Jumlah Barang (pcs) *'}
@@ -910,49 +837,47 @@ export function ProductsPage() {
               value={stockFormData.quantity}
               onChange={(e) => setStockFormData({ ...stockFormData, quantity: e.target.value })}
               disabled={stockSubmitting}
-              placeholder="1"
-              className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+              className="w-full px-3 py-1.5 rounded-lg border border-zinc-200 text-xs focus:outline-none focus:border-zinc-900"
             />
           </div>
 
-          {/* Kalkulasi Preview */}
-          <div className="p-3 rounded-xl bg-blue-50/70 border border-blue-100 flex items-center justify-between text-xs">
-            <span className="text-slate-600 font-medium">Estimasi Stok Akhir:</span>
-            <span className="font-bold text-blue-700 text-sm">
+          <div className="p-2.5 rounded-lg bg-zinc-50 border border-zinc-200 flex items-center justify-between text-xs">
+            <span className="text-zinc-500">Estimasi Stok Akhir:</span>
+            <span className="font-semibold text-zinc-900 tabular-nums font-mono">
               {stockPreview} pcs
             </span>
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">
-              Catatan / Alasan Mutasi
+            <label className="block text-xs font-medium text-zinc-700 mb-1">
+              Catatan
             </label>
             <textarea
               rows={2}
               value={stockFormData.note}
               onChange={(e) => setStockFormData({ ...stockFormData, note: e.target.value })}
               disabled={stockSubmitting}
-              placeholder="misal: Pembelian faktur #INV-001 dari supplier"
-              className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+              placeholder="Keterangan mutasi..."
+              className="w-full px-3 py-1.5 rounded-lg border border-zinc-200 text-xs focus:outline-none focus:border-zinc-900"
             />
           </div>
 
-          <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100">
+          <div className="flex items-center justify-end gap-2 pt-3 border-t border-zinc-100">
             <button
               type="button"
               disabled={stockSubmitting}
               onClick={() => setIsStockModalOpen(false)}
-              className="px-4 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-xl hover:bg-slate-50 transition-colors disabled:opacity-50"
+              className="px-3 py-1.5 text-xs font-medium text-zinc-700 bg-white border border-zinc-200 rounded-lg hover:bg-zinc-50"
             >
               Batal
             </button>
             <button
               type="submit"
               disabled={stockSubmitting}
-              className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-blue-600 rounded-xl hover:bg-blue-700 transition-colors shadow-xs disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium text-white bg-zinc-900 rounded-lg hover:bg-zinc-800 transition-colors shadow-xs disabled:opacity-50 cursor-pointer"
             >
-              {stockSubmitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-              Simpan Mutasi Stok
+              {stockSubmitting && <Loader2 className="w-3 h-3 animate-spin" />}
+              <span>Simpan Mutasi</span>
             </button>
           </div>
         </form>
@@ -963,62 +888,54 @@ export function ProductsPage() {
         isOpen={isHistoryModalOpen}
         onClose={() => setIsHistoryModalOpen(false)}
         title={`Riwayat Mutasi: ${historyTarget?.name || ''}`}
-        maxWidth="max-w-2xl"
+        maxWidth="max-w-xl"
       >
-        <div className="space-y-4">
-          <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs">
-            <div>
-              <span className="text-slate-500">SKU:</span>{' '}
-              <span className="font-mono font-bold text-slate-800">{historyTarget?.sku}</span>
-            </div>
-            <div>
-              <span className="text-slate-500">Stok Saat Ini:</span>{' '}
-              <span className="font-bold text-blue-700">{historyTarget?.stock} pcs</span>
-            </div>
+        <div className="space-y-3.5">
+          <div className="flex items-center justify-between p-2.5 rounded-lg bg-zinc-50 border border-zinc-200 text-xs">
+            <span className="text-zinc-500">SKU: <strong className="font-mono text-zinc-800">{historyTarget?.sku}</strong></span>
+            <span className="text-zinc-500">Stok: <strong className="text-zinc-900 font-mono">{historyTarget?.stock} pcs</strong></span>
           </div>
 
           {loadingMovements ? (
-            <div className="py-8 text-center">
-              <Loader2 className="w-6 h-6 animate-spin text-blue-600 mx-auto mb-2" />
-              <p className="text-xs text-slate-500">Memuat log mutasi stok...</p>
+            <div className="py-6 text-center text-xs text-zinc-400">
+              <Loader2 className="w-4 h-4 animate-spin mx-auto mb-1 text-zinc-600" />
+              <span>Memuat riwayat...</span>
             </div>
           ) : movements.length === 0 ? (
-            <div className="py-8 text-center text-slate-400">
-              <Boxes className="w-8 h-8 mx-auto mb-2 text-slate-300" />
-              <p className="text-xs font-medium">Belum ada riwayat mutasi stok untuk produk ini.</p>
+            <div className="py-6 text-center text-zinc-400 text-xs">
+              <Boxes className="w-6 h-6 mx-auto mb-1 text-zinc-300" />
+              <span>Belum ada catatan mutasi</span>
             </div>
           ) : (
-            <div className="max-h-72 overflow-y-auto divide-y divide-slate-100 border border-slate-200 rounded-xl">
+            <div className="max-h-64 overflow-y-auto divide-y divide-zinc-100 border border-zinc-200 rounded-lg">
               {movements.map((m) => {
                 const isPositive = m.quantity > 0
                 return (
-                  <div key={m.id} className="p-3 text-xs flex items-center justify-between hover:bg-slate-50/70">
+                  <div key={m.id} className="p-2.5 text-xs flex items-center justify-between hover:bg-zinc-50">
                     <div>
                       <div className="flex items-center gap-2">
                         <span
-                          className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                          className={`px-1.5 py-0.5 rounded text-[10px] font-medium uppercase ${
                             m.type === 'in'
-                              ? 'bg-emerald-100 text-emerald-800'
+                              ? 'bg-emerald-50 text-emerald-700'
                               : m.type === 'out'
-                              ? 'bg-rose-100 text-rose-800'
-                              : 'bg-indigo-100 text-indigo-800'
+                              ? 'bg-rose-50 text-rose-700'
+                              : 'bg-zinc-100 text-zinc-700'
                           }`}
                         >
-                          {m.type === 'in' ? 'Masuk' : m.type === 'out' ? 'Keluar' : 'Penyesuaian'}
+                          {m.type === 'in' ? 'Masuk' : m.type === 'out' ? 'Keluar' : 'Opname'}
                         </span>
-                        <span className="font-semibold text-slate-800">
+                        <span className="font-medium text-zinc-900 font-mono">
                           {isPositive ? `+${m.quantity}` : `${m.quantity}`} pcs
                         </span>
                       </div>
-                      <p className="text-[11px] text-slate-500 mt-1">
-                        {m.note || <span className="italic text-slate-300">Tidak ada catatan</span>}
+                      <p className="text-[11px] text-zinc-400 mt-0.5">
+                        {m.note || '-'}
                       </p>
                     </div>
                     <div className="text-right">
-                      <p className="text-[11px] font-medium text-slate-600">
-                        {m.user?.name || 'Sistem'}
-                      </p>
-                      <p className="text-[10px] text-slate-400">{formatDate(m.created_at)}</p>
+                      <p className="text-[11px] text-zinc-600">{m.user?.name || 'Sistem'}</p>
+                      <p className="text-[10px] text-zinc-400">{formatDate(m.created_at)}</p>
                     </div>
                   </div>
                 )
@@ -1026,11 +943,11 @@ export function ProductsPage() {
             </div>
           )}
 
-          <div className="flex justify-end pt-3 border-t border-slate-100">
+          <div className="flex justify-end pt-2 border-t border-zinc-100">
             <button
               type="button"
               onClick={() => setIsHistoryModalOpen(false)}
-              className="px-4 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-xl hover:bg-slate-50 transition-colors"
+              className="px-3 py-1.5 text-xs font-medium text-zinc-700 bg-white border border-zinc-200 rounded-lg hover:bg-zinc-50"
             >
               Tutup
             </button>
@@ -1044,8 +961,8 @@ export function ProductsPage() {
         onClose={() => !deleting && setDeleteTarget(null)}
         onConfirm={handleDeleteConfirm}
         title="Hapus Produk"
-        message={`Apakah Anda yakin ingin menghapus produk "${deleteTarget?.name}"? Produk yang memiliki riwayat transaksi atau mutasi stok tidak dapat dihapus secara permanen.`}
-        confirmText={deleting ? 'Menghapus...' : 'Hapus Produk'}
+        message={`Apakah Anda yakin ingin menghapus produk "${deleteTarget?.name}"?`}
+        confirmText={deleting ? 'Menghapus...' : 'Hapus'}
       />
     </div>
   )

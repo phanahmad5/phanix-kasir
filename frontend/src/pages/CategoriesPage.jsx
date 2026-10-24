@@ -1,16 +1,18 @@
 import React, { useState, useEffect, useCallback } from 'react'
-import { Plus, Edit2, Trash2, Tags, Layers, Loader2, AlertCircle, CheckCircle2, RefreshCw } from 'lucide-react'
+import { Plus, Edit2, Trash2, Tags, RefreshCw, AlertCircle, CheckCircle2, Loader2 } from 'lucide-react'
 import { categoryService } from '../api/categories'
 import { useAuth } from '../context/AuthContext'
 import { Modal } from '../components/ui/Modal'
 import { ConfirmModal } from '../components/ui/ConfirmModal'
+import { getCache, setCache, invalidateCache } from '../utils/cache'
+import { Badge } from '../components/ui/Badge'
 
 export function CategoriesPage() {
   const { isAdmin } = useAuth()
 
-  // State Data
-  const [categories, setCategories] = useState([])
-  const [loading, setLoading] = useState(true)
+  // State Data - Diambil dari cache jika ada agar instan tanpa loading
+  const [categories, setCategories] = useState(() => getCache('categories') || [])
+  const [loading, setLoading] = useState(() => !getCache('categories'))
   const [fetchError, setFetchError] = useState(null)
 
   // State Modal Form & Delete
@@ -25,19 +27,26 @@ export function CategoriesPage() {
   const [formErrors, setFormErrors] = useState({})
   const [generalFormError, setGeneralFormError] = useState('')
 
-  // Feedback Notification (Toast / Alert)
-  const [notification, setNotification] = useState(null) // { type: 'success' | 'error', message: '' }
+  // Notification Toast
+  const [notification, setNotification] = useState(null)
 
   // Fungsi memuat kategori dari REST API
-  const fetchCategories = useCallback(async () => {
-    setLoading(true)
+  const fetchCategories = useCallback(async (isManualRefresh = false) => {
+    const cached = getCache('categories')
+    if (!cached || isManualRefresh) {
+      setLoading(true)
+    }
     setFetchError(null)
+
     try {
       const response = await categoryService.getAll()
-      // response format: { success: true, data: [...] }
-      setCategories(response.data || [])
+      const data = response.data || []
+      setCache('categories', data)
+      setCategories(data)
     } catch (err) {
-      setFetchError(err.friendlyMessage || 'Gagal mengambil data kategori dari server.')
+      if (!cached) {
+        setFetchError(err.friendlyMessage || 'Gagal mengambil data kategori.')
+      }
     } finally {
       setLoading(false)
     }
@@ -47,12 +56,9 @@ export function CategoriesPage() {
     fetchCategories()
   }, [fetchCategories])
 
-  // Otomatis menutup notifikasi setelah 4 detik
   useEffect(() => {
     if (notification?.type === 'success') {
-      const timer = setTimeout(() => {
-        setNotification(null)
-      }, 4000)
+      const timer = setTimeout(() => setNotification(null), 3000)
       return () => clearTimeout(timer)
     }
   }, [notification])
@@ -108,19 +114,15 @@ export function CategoriesPage() {
         })
       }
 
+      invalidateCache('categories')
+      invalidateCache('pos_categories')
       setIsModalOpen(false)
-      await fetchCategories()
+      fetchCategories(true)
     } catch (err) {
-      if (err.response?.status === 422 && err.response?.data?.errors) {
-        const backendErrors = {}
-        const errors = err.response.data.errors
-        if (errors.name) backendErrors.name = errors.name[0]
-        if (errors.description) backendErrors.description = errors.description[0]
-        setFormErrors(backendErrors)
+      if (err.response?.data?.errors) {
+        setFormErrors(err.response.data.errors)
       } else {
-        setGeneralFormError(
-          err.friendlyMessage || 'Terjadi kesalahan saat menyimpan kategori.'
-        )
+        setGeneralFormError(err.friendlyMessage || 'Gagal menyimpan kategori.')
       }
     } finally {
       setSubmitting(false)
@@ -136,75 +138,70 @@ export function CategoriesPage() {
         type: 'success',
         message: `Kategori "${deleteTarget.name}" berhasil dihapus.`,
       })
+      invalidateCache('categories')
+      invalidateCache('pos_categories')
       setDeleteTarget(null)
-      await fetchCategories()
+      fetchCategories(true)
     } catch (err) {
       setNotification({
         type: 'error',
-        message:
-          err.friendlyMessage ||
-          'Kategori gagal dihapus. Pastikan kategori tidak digunakan oleh produk.',
+        message: err.friendlyMessage || 'Gagal menghapus kategori.',
       })
-      setDeleteTarget(null)
     } finally {
       setDeleting(false)
     }
   }
 
   return (
-    <div className="space-y-6 max-w-5xl mx-auto">
+    <div className="space-y-4 max-w-5xl mx-auto">
       {/* Top Action Bar */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <div className="flex items-center gap-2.5">
-            <h2 className="text-xl font-bold text-slate-900 tracking-tight">Kategori Produk</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-base font-semibold text-zinc-900 tracking-tight">Kategori Produk</h2>
             {!isAdmin && (
-              <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-600 border border-slate-200">
-                Mode Baca (Kasir)
-              </span>
+              <Badge variant="outline">Mode Baca</Badge>
             )}
           </div>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Klasifikasikan produk toko untuk mempermudah pencarian saat transaksi
+          <p className="text-xs text-zinc-500">
+            Klasifikasi kelompok barang toko
           </p>
         </div>
 
         <div className="flex items-center gap-2">
-          {/* Tombol Segarkan */}
           <button
             type="button"
-            onClick={fetchCategories}
+            onClick={() => fetchCategories(true)}
             disabled={loading}
-            className="p-2 rounded-xl text-slate-500 hover:text-slate-800 hover:bg-slate-100 border border-slate-200 transition-colors disabled:opacity-50"
-            title="Segarkan data kategori"
+            className="p-1.5 rounded-lg text-zinc-600 hover:bg-zinc-100 border border-zinc-200 bg-white transition-colors disabled:opacity-50 cursor-pointer"
+            title="Segarkan kategori"
           >
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin text-blue-600' : ''}`} />
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-zinc-900' : ''}`} />
           </button>
 
-          {/* Tombol Tambah Kategori (Khusus Admin) */}
           {isAdmin && (
             <button
               type="button"
               onClick={handleOpenAdd}
-              className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 text-white text-xs font-semibold shadow-xs hover:bg-blue-700 transition-colors cursor-pointer"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 text-white text-xs font-medium hover:bg-zinc-800 transition-colors shadow-xs cursor-pointer"
             >
-              <Plus className="w-4 h-4" />
-              Tambah Kategori
+              <Plus className="w-3.5 h-3.5" />
+              <span>Tambah Kategori</span>
             </button>
           )}
         </div>
       </div>
 
-      {/* Alert Notifikasi Feedback */}
+      {/* Alert Notifikasi */}
       {notification && (
         <div
-          className={`p-3.5 rounded-xl text-xs flex items-center justify-between gap-3 border transition-all ${
+          className={`p-3 rounded-lg text-xs flex items-center justify-between gap-2 border transition-all ${
             notification.type === 'success'
               ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
               : 'bg-rose-50 text-rose-800 border-rose-200'
           }`}
         >
-          <div className="flex items-center gap-2.5 min-w-0">
+          <div className="flex items-center gap-2 min-w-0">
             {notification.type === 'success' ? (
               <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600" />
             ) : (
@@ -215,130 +212,111 @@ export function CategoriesPage() {
           <button
             type="button"
             onClick={() => setNotification(null)}
-            className="text-[11px] font-semibold underline hover:no-underline shrink-0"
+            className="text-[11px] underline hover:no-underline shrink-0"
           >
             Tutup
           </button>
         </div>
       )}
 
-      {/* Error State saat Pengambilan Data Gagal */}
+      {/* Error State */}
       {fetchError && !loading && (
-        <div className="bg-rose-50 border border-rose-200 rounded-2xl p-6 text-center space-y-3">
-          <div className="w-10 h-10 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center mx-auto">
-            <AlertCircle className="w-5 h-5" />
-          </div>
-          <div>
-            <h3 className="text-sm font-semibold text-rose-900">Gagal Memuat Kategori</h3>
-            <p className="text-xs text-rose-700 mt-1 max-w-md mx-auto">{fetchError}</p>
-          </div>
+        <div className="bg-rose-50 border border-rose-200 rounded-xl p-4 text-center space-y-2">
+          <p className="text-xs text-rose-700">{fetchError}</p>
           <button
             type="button"
-            onClick={fetchCategories}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-rose-600 text-white text-xs font-semibold hover:bg-rose-700 transition-colors"
+            onClick={() => fetchCategories(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md bg-rose-600 text-white text-xs font-medium hover:bg-rose-700"
           >
-            <RefreshCw className="w-3.5 h-3.5" />
+            <RefreshCw className="w-3 h-3" />
             Coba Lagi
           </button>
         </div>
       )}
 
-      {/* Loading Skeleton */}
-      {loading && (
-        <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center shadow-xs">
-          <div className="flex flex-col items-center justify-center gap-3">
-            <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
-            <p className="text-xs text-slate-500 font-medium">Memuat data kategori dari server...</p>
-          </div>
+      {/* First-time Loading Skeleton */}
+      {loading && categories.length === 0 && (
+        <div className="bg-white rounded-xl border border-zinc-200/80 p-8 text-center animate-pulse">
+          <div className="h-4 bg-zinc-100 rounded w-48 mx-auto mb-2" />
+          <div className="h-3 bg-zinc-50 rounded w-32 mx-auto" />
         </div>
       )}
 
       {/* Empty State */}
       {!loading && !fetchError && categories.length === 0 && (
-        <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center shadow-xs space-y-4">
-          <div className="w-12 h-12 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center mx-auto">
-            <Layers className="w-6 h-6" />
+        <div className="bg-white rounded-xl border border-zinc-200/80 p-10 text-center space-y-3">
+          <div className="w-9 h-9 rounded-lg bg-zinc-100 text-zinc-500 flex items-center justify-center mx-auto">
+            <Tags className="w-4 h-4" />
           </div>
           <div>
-            <h3 className="text-sm font-bold text-slate-900">Belum Ada Kategori Produk</h3>
-            <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
-              Klasifikasikan produk toko Anda ke dalam kategori untuk mempercepat pencarian barang di kasir.
-            </p>
+            <h3 className="text-xs font-semibold text-zinc-900">Belum Ada Kategori</h3>
+            <p className="text-[11px] text-zinc-400 mt-0.5">Tambahkan kategori untuk memudahkan katalog kasir</p>
           </div>
           {isAdmin && (
             <button
               type="button"
               onClick={handleOpenAdd}
-              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700 transition-colors shadow-xs"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 text-white text-xs font-medium hover:bg-zinc-800"
             >
-              <Plus className="w-4 h-4" />
-              Tambah Kategori Pertama
+              <Plus className="w-3.5 h-3.5" />
+              <span>Tambah Kategori</span>
             </button>
           )}
         </div>
       )}
 
       {/* Categories Table */}
-      {!loading && !fetchError && categories.length > 0 && (
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+      {categories.length > 0 && (
+        <div className="bg-white rounded-xl border border-zinc-200/80 shadow-xs overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs text-slate-600">
-              <thead className="bg-slate-50/80 text-[11px] uppercase tracking-wider text-slate-500 font-semibold border-b border-slate-100">
+            <table className="w-full text-left text-xs text-zinc-600">
+              <thead className="bg-zinc-50 text-[10px] uppercase tracking-wider text-zinc-400 font-semibold border-b border-zinc-100">
                 <tr>
-                  <th className="px-6 py-3.5">ID</th>
-                  <th className="px-6 py-3.5">Nama Kategori</th>
-                  <th className="px-6 py-3.5">Deskripsi</th>
-                  <th className="px-6 py-3.5 text-center">Jumlah Produk</th>
-                  <th className="px-6 py-3.5 text-right">Aksi</th>
+                  <th className="px-5 py-3 w-16">No</th>
+                  <th className="px-5 py-3">Nama Kategori</th>
+                  <th className="px-5 py-3">Deskripsi</th>
+                  <th className="px-5 py-3 text-center w-32">Jumlah Produk</th>
+                  <th className="px-5 py-3 text-right w-24">Aksi</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100">
+              <tbody className="divide-y divide-zinc-100">
                 {categories.map((c, index) => {
                   const productCount = c.products_count ?? c.productCount ?? 0
 
                   return (
-                    <tr key={c.id} className="hover:bg-slate-50/60 transition-colors">
-                      <td className="px-6 py-4 font-mono text-slate-400">#{index + 1}</td>
-                      <td className="px-6 py-4">
-                        <div className="font-semibold text-slate-900 flex items-center gap-2">
-                          <div className="w-6 h-6 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center">
-                            <Tags className="w-3.5 h-3.5" />
-                          </div>
-                          {c.name}
-                        </div>
+                    <tr key={c.id} className="hover:bg-zinc-50/70 transition-colors">
+                      <td className="px-5 py-3 font-mono text-zinc-400 text-[11px]">{index + 1}</td>
+                      <td className="px-5 py-3 font-medium text-zinc-900">
+                        {c.name}
                       </td>
-                      <td className="px-6 py-4 text-slate-500">
-                        {c.description || (
-                          <span className="text-slate-300 italic">Tidak ada deskripsi</span>
-                        )}
+                      <td className="px-5 py-3 text-zinc-500 text-[11px]">
+                        {c.description || <span className="text-zinc-300 italic">-</span>}
                       </td>
-                      <td className="px-6 py-4 text-center">
-                        <span className="inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-700">
-                          {productCount} Produk
-                        </span>
+                      <td className="px-5 py-3 text-center">
+                        <Badge variant="neutral">{productCount} Produk</Badge>
                       </td>
-                      <td className="px-6 py-4 text-right">
+                      <td className="px-5 py-3 text-right">
                         {isAdmin ? (
-                          <div className="flex items-center justify-end gap-1.5">
+                          <div className="flex items-center justify-end gap-1">
                             <button
                               type="button"
                               onClick={() => handleOpenEdit(c)}
-                              className="p-1.5 rounded-lg text-slate-500 hover:text-blue-600 hover:bg-blue-50 transition-colors"
-                              title="Edit Kategori"
+                              className="p-1 rounded text-zinc-400 hover:text-zinc-800 hover:bg-zinc-100 transition-colors"
+                              title="Edit"
                             >
-                              <Edit2 className="w-4 h-4" />
+                              <Edit2 className="w-3.5 h-3.5" />
                             </button>
                             <button
                               type="button"
                               onClick={() => setDeleteTarget(c)}
-                              className="p-1.5 rounded-lg text-slate-500 hover:text-rose-600 hover:bg-rose-50 transition-colors"
-                              title="Hapus Kategori"
+                              className="p-1 rounded text-zinc-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
+                              title="Hapus"
                             >
-                              <Trash2 className="w-4 h-4" />
+                              <Trash2 className="w-3.5 h-3.5" />
                             </button>
                           </div>
                         ) : (
-                          <span className="text-slate-300 text-[11px] italic">Khusus Admin</span>
+                          <span className="text-zinc-300 text-[10px]">-</span>
                         )}
                       </td>
                     </tr>
@@ -354,19 +332,19 @@ export function CategoriesPage() {
       <Modal
         isOpen={isModalOpen}
         onClose={() => !submitting && setIsModalOpen(false)}
-        title={editingCategory ? 'Edit Kategori' : 'Tambah Kategori Baru'}
+        title={editingCategory ? 'Edit Kategori' : 'Tambah Kategori'}
         maxWidth="max-w-md"
       >
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} className="space-y-3.5">
           {generalFormError && (
-            <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">
+            <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">
               <AlertCircle className="w-4 h-4 shrink-0" />
               <span>{generalFormError}</span>
             </div>
           )}
 
           <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">
+            <label className="block text-xs font-medium text-zinc-700 mb-1">
               Nama Kategori *
             </label>
             <input
@@ -376,20 +354,20 @@ export function CategoriesPage() {
                 setFormData({ ...formData, name: e.target.value })
                 if (formErrors.name) setFormErrors({ ...formErrors, name: null })
               }}
-              placeholder="misal: Makanan Ringan"
+              placeholder="Contoh: Minuman, Makanan"
               disabled={submitting}
-              className={`w-full px-3 py-2 rounded-xl border text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20 ${
-                formErrors.name ? 'border-rose-400 focus:border-rose-500' : 'border-slate-200 focus:border-blue-500'
+              className={`w-full px-3 py-2 rounded-lg border text-xs focus:outline-none ${
+                formErrors.name ? 'border-rose-400 focus:border-rose-500' : 'border-zinc-200 focus:border-zinc-900'
               }`}
             />
             {formErrors.name && (
-              <p className="text-[11px] text-rose-500 mt-1">{formErrors.name}</p>
+              <p className="text-[11px] text-rose-600 mt-1">{formErrors.name}</p>
             )}
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">
-              Deskripsi Singkat (Opsional)
+            <label className="block text-xs font-medium text-zinc-700 mb-1">
+              Deskripsi (Opsional)
             </label>
             <textarea
               rows={3}
@@ -398,31 +376,31 @@ export function CategoriesPage() {
                 setFormData({ ...formData, description: e.target.value })
                 if (formErrors.description) setFormErrors({ ...formErrors, description: null })
               }}
-              placeholder="Keterangan singkat mengenai kategori ini..."
+              placeholder="Keterangan singkat kategori..."
               disabled={submitting}
-              className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+              className="w-full px-3 py-2 rounded-lg border border-zinc-200 text-xs focus:outline-none focus:border-zinc-900"
             />
             {formErrors.description && (
-              <p className="text-[11px] text-rose-500 mt-1">{formErrors.description}</p>
+              <p className="text-[11px] text-rose-600 mt-1">{formErrors.description}</p>
             )}
           </div>
 
-          <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100">
+          <div className="flex items-center justify-end gap-2 pt-3 border-t border-zinc-100">
             <button
               type="button"
               disabled={submitting}
               onClick={() => setIsModalOpen(false)}
-              className="px-4 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-xl hover:bg-slate-50 transition-colors disabled:opacity-50"
+              className="px-3 py-1.5 text-xs font-medium text-zinc-700 bg-white border border-zinc-200 rounded-lg hover:bg-zinc-50"
             >
               Batal
             </button>
             <button
               type="submit"
               disabled={submitting}
-              className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-blue-600 rounded-xl hover:bg-blue-700 transition-colors shadow-xs disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium text-white bg-zinc-900 rounded-lg hover:bg-zinc-800 transition-colors shadow-xs disabled:opacity-50"
             >
-              {submitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-              {editingCategory ? 'Simpan Perubahan' : 'Tambahkan Kategori'}
+              {submitting && <Loader2 className="w-3 h-3 animate-spin" />}
+              <span>{editingCategory ? 'Simpan' : 'Tambah'}</span>
             </button>
           </div>
         </form>
@@ -438,10 +416,10 @@ export function CategoriesPage() {
           (deleteTarget?.products_count ?? deleteTarget?.productCount ?? 0) > 0
             ? `Peringatan: Kategori "${deleteTarget?.name}" masih memiliki ${
                 deleteTarget?.products_count ?? deleteTarget?.productCount
-              } produk terdaftar. Anda harus memindahkan atau menghapus produk terkait sebelum dapat menghapus kategori ini.`
-            : `Apakah Anda yakin ingin menghapus kategori "${deleteTarget?.name}"? Tindakan ini tidak dapat dibatalkan.`
+              } produk terdaftar. Anda harus memindahkan produk terlebih dahulu.`
+            : `Apakah Anda yakin ingin menghapus kategori "${deleteTarget?.name}"?`
         }
-        confirmText={deleting ? 'Menghapus...' : 'Hapus Kategori'}
+        confirmText={deleting ? 'Menghapus...' : 'Hapus'}
       />
     </div>
   )
